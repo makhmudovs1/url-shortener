@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,25 +12,59 @@ import (
 )
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		slog.Error("DATABASE_URL is empty")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		slog.Error("pgxpool.New failed", "err", err)
+		os.Exit(1)
+	}
+	err = pool.Ping(ctx)
+	if err != nil {
+		slog.Error("db ping failed", "err", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("OK"))
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if _, err := pool.Exec(ctx, "SELECT 1"); err != nil {
+			slog.Error("readyz: db not ready", "err", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte("db not ready"))
+			return
+		}
+		w.Write([]byte("ready"))
 	})
 	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
+		Addr:         ":" + port,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 	// Running server in another goroutine
 	go func() {
-		slog.Info("Server is running on port", port)
+		slog.Info("starting http server", "port", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "err", err)
 			os.Exit(1)
@@ -41,10 +76,10 @@ func main() {
 	<-stop
 	slog.Info("shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shCancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shCtx); err != nil {
 		slog.Error("graceful shutdown failed", "err", err)
 	} else {
 		slog.Info("server stopped")
