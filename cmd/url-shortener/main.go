@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/makhmudovs1/url-shortener/internal/handler"
+	"github.com/makhmudovs1/url-shortener/internal/shortener"
+	"github.com/makhmudovs1/url-shortener/internal/storage"
 	"log/slog"
 	"net/http"
 	"os"
@@ -39,8 +42,13 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-	mux := http.NewServeMux()
 
+	repo := storage.New(pool)
+	id, _ := repo.Create(ctx, "https://example.com", nil)
+	code := shortener.ShortenURL(id)
+	_ = repo.SetCode(ctx, id, code)
+
+	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
@@ -55,6 +63,8 @@ func main() {
 		}
 		w.Write([]byte("ready"))
 	})
+	mux.HandleFunc("/shorten", handler.ShortenHandler(repo))
+
 	srv := &http.Server{
 		Addr:         ":" + port,
 		Handler:      mux,
