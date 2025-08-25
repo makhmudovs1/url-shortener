@@ -64,6 +64,7 @@ func main() {
 		w.Write([]byte("ready"))
 	})
 	mux.HandleFunc("/shorten", handler.ShortenHandler(repo))
+	mux.HandleFunc("/", handler.RedirectHandler(repo))
 
 	srv := &http.Server{
 		Addr:         ":" + port,
